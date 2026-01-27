@@ -1,35 +1,38 @@
-name: 编译OpenCV-iOS13-极致精简版
+name: 编译OpenCV-iOS13-含OC支持
 
 on:
-  workflow_dispatch: # 手动触发
+  workflow_dispatch:
 
 jobs:
   build-opencv:
-    # 使用 macos-15 (确保是 M1/M2 芯片节点，编译更快且更符合当前环境)
     runs-on: macos-15
 
     steps:
-      - name: 拉取源码
+      - name: 1. 打印环境信息
+        run: |
+          echo "==== 系统信息 ===="
+          sw_vers
+          uname -m
+          echo "==== 指定 Xcode 16.1 ===="
+          sudo xcode-select -s /Applications/Xcode_16.1.app
+          xcodebuild -version
+
+      - name: 2. 拉取 OpenCV 源码 (4.11.0)
         uses: actions/checkout@v4
         with:
           repository: opencv/opencv
-          ref: 4.x
+          ref: 4.11.0
           path: opencv_source
           fetch-depth: 1
 
-      - name: 配置Python
-        uses: actions/setup-python@v4
-        with:
-          python-version: '3.x'
-
-      - name: 开始编译 (仅arm64真机, 移除i386)
+      - name: 3. 开始编译 (包含 OC 绑定层)
         run: |
           mkdir -p output
           
-          # 核心修复说明：
-          # 1. --iphoneos_archs arm64: 明确指定只编译真机架构
-          # 2. --iphonesimulator_archs "": 明确指定【不】编译模拟器架构，防止出现 i386 报错
-          # 3. 每一个模块单独使用 --without，防止 CMake 识别字符串成一坨
+          # 注意：
+          # 1. 我们不再排除 objc 和 objc_bindings_generator
+          # 2. 仅排除最大的 dnn 模块以及非 iOS 的绑定层 (java, js, python)
+          # 3. 明确指定仅编译 arm64，跳过模拟器以防报错
           
           python3 opencv_source/platforms/ios/build_framework.py output \
             --iphoneos_archs arm64 \
@@ -38,42 +41,43 @@ jobs:
             --without dnn \
             --without java \
             --without js \
-            --without python_bindings_generator \
-            --without objc_bindings_generator \
-            --without videoio \
-            --without gapi
+            --without python_bindings_generator
           
-      - name: 剥离符号表 (Strip)
+      - name: 4. 深度瘦身 (Strip)
         run: |
-          FRAMEWORK_PATH="output/opencv2.framework/opencv2"
-          # 检查文件是否存在
-          if [ -f "$FRAMEWORK_PATH" ]; then
-            echo "优化前文件大小:"
-            ls -lh $FRAMEWORK_PATH
-            strip -S $FRAMEWORK_PATH
-            echo "优化后文件大小:"
-            ls -lh $FRAMEWORK_PATH
+          # 查找生成的二进制文件
+          FRAMEWORK_BIN=$(find output -name "opencv2" -type f | grep "opencv2.framework/opencv2")
+          if [ -f "$FRAMEWORK_BIN" ]; then
+            echo "==== Strip 前文件信息 ===="
+            ls -lh $FRAMEWORK_BIN
+            
+            # 剥离符号表
+            strip -S $FRAMEWORK_BIN
+            
+            echo "==== Strip 后文件信息 ===="
+            ls -lh $FRAMEWORK_BIN
           else
-            echo "错误: 找不到编译后的二进制文件 $FRAMEWORK_PATH"
+            echo "错误: 未找到二进制文件"
+            find output -maxdepth 5
             exit 1
           fi
 
-      - name: 压缩并上传到Release
+      - name: 5. 打包并上传
         run: |
           cd output
-          zip -r ../opencv2_ios13_cpp.zip opencv2.framework
+          zip -r ../opencv2_ios13_with_objc.zip opencv2.framework
 
-      - name: 创建Release
+      - name: 6. 创建 Release
         uses: softprops/action-gh-release@v1
         with:
-          tag_name: v4.x-ios13-cpp
-          name: OpenCV iOS 13 (C++ 核心版)
-          files: opencv2_ios13_cpp.zip
+          tag_name: v4.11.0-ios13-objc
+          name: OpenCV 4.11.0 iOS 13 (含OC支持)
+          files: opencv2_ios13_with_objc.zip
           body: |
-            ### 极致优化版说明 (修复 i386 报错)
-            - **架构**: 仅 arm64 (iOS 13.0+)
-            - **模式**: 纯 C++ 核心
-            - **已剔除**: DNN, 所有绑定层 (Java, JS, Python, ObjC)
-            - **注意**: 编译已移除模拟器支持，仅支持真机。
+            ### 编译结果说明
+            - **包含 OC 绑定**: 允许在项目中直接使用 `[Mat ...]` 等 Objective-C 接口。
+            - **架构**: arm64 (iOS 13.0+)
+            - **已移除**: 仅移除 DNN, Java, JS, Python。
+            - **体积提示**: 请查看下方二进制文件大小，若超过 100MB 则无法直接 Push。
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
