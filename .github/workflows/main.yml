@@ -13,11 +13,11 @@ jobs:
           echo "==== 系统信息 ===="
           sw_vers
           uname -m
-          echo "==== 指定 Xcode 16.1 ===="
+          echo "==== 指定 Xcode 16.4 ===="
           sudo xcode-select -s /Applications/Xcode_16.4.app
           xcodebuild -version
 
-      - name: 2. 拉取 OpenCV 源码 (4.12.0)
+      - name: 2. 拉取 OpenCV 源码 (4.11.0)
         uses: actions/checkout@v4
         with:
           repository: opencv/opencv
@@ -25,16 +25,17 @@ jobs:
           path: opencv_source
           fetch-depth: 1
 
-      - name: 3. 开始编译 (保留 OC 绑定, 不进行瘦身)
+      - name: 3. 强力破解脚本并开始编译
         run: |
           mkdir -p output
           
-          # 编译指令说明：
-          # --iphoneos_archs arm64: 仅编译 64 位真机
-          # --iphonesimulator_archs "": 跳过模拟器，解决 Xcode 16 的 i386 兼容报错
-          # --build_only_specified_archs: 强制脚本只编译 arm64，不编译已过时的 armv7
-          # --without: 仅移除 DNN 和 其它平台绑定，确保 OC 绑定层被编译
+          # 针对 Xcode 16 的硬核修复：
+          # 直接修改脚本，防止其尝试编译已失效的 i386 架构
+          sed -i '' 's/\["i386", "x86_64"\]/\[\]/g' opencv_source/platforms/ios/build_framework.py
+          sed -i '' 's/targets = self.get_default_targets()/targets = [("iphoneos", "arm64")]/g' opencv_source/platforms/ios/build_framework.py
           
+          # 运行编译
+          # --build_only_specified_archs: 强制只打指定的 arm64
           python3 opencv_source/platforms/ios/build_framework.py output \
             --opencv opencv_source \
             --iphoneos_archs arm64 \
@@ -46,22 +47,32 @@ jobs:
             --without js \
             --without python_bindings_generator
           
-      - name: 4. 检查文件大小 (不进行 Strip)
+      - name: 4. 检查文件大小 (不进行瘦身)
         run: |
-          BINARY_PATH=$(find output -name "opencv2" -type f | grep "opencv2.framework/opencv2")
-          if [ -f "$BINARY_PATH" ]; then
+          # 修复路径查找逻辑：
+          # 在 iOS 静态库 Framework 结构中，真正的二进制文件位于 Versions/A/opencv2
+          # 根目录下的 opencv2 通常只是个符号链接
+          REAL_BINARY="output/opencv2.framework/Versions/A/opencv2"
+          
+          if [ -f "$REAL_BINARY" ]; then
+            echo "==== 最终二进制文件路径: $REAL_BINARY ===="
             echo "==== 最终二进制文件大小 ===="
-            ls -lh "$BINARY_PATH"
+            ls -lh "$REAL_BINARY"
           else
-            echo "错误: 未能找到生成的二进制文件"
-            find output -name "opencv2"
-            exit 1
+            echo "警告: 未能找到 Versions 结构下的二进制文件，尝试查找根目录..."
+            REAL_BINARY="output/opencv2.framework/opencv2"
+            if [ -f "$REAL_BINARY" ]; then
+               ls -lh "$REAL_BINARY"
+            else
+               echo "错误: 彻底找不到生成的二进制文件"
+               find output -maxdepth 5 -name "opencv2"
+               exit 1
+            fi
           fi
 
       - name: 5. 压缩 Framework
         run: |
           cd output
-          # 压缩时保留所有内容
           zip -r ../opencv2_ios13_full_objc.zip opencv2.framework
 
       - name: 6. 上传到 GitHub Release
@@ -73,10 +84,10 @@ jobs:
           body: |
             ### 编译说明
             - **版本**: OpenCV 4.11.0
-            - **特点**: **未瘦身 (No Strip)**，包含完整符号表。
-            - **包含内容**: 保留了 Objective-C 包装层、Features2d、Stitching、Video、Calib3d 等所有核心模块。
-            - **已移除**: 仅去除了 DNN 模块。
-            - **架构**: arm64 (iOS 13.0+)
-            - **警告**: 由于未瘦身，文件体积很大（预计 >300MB），请不要将其提交至 Git 仓库。
+            - **特点**: **未瘦身 (No Strip)**，包含完整符号表和调试信息。
+            - **包含内容**: 保留了 Objective-C 包装层及所有核心算法模块。
+            - **最低支持**: iOS 13.0
+            - **架构**: arm64 (仅真机)
+            - **体积提示**: 预计 >300MB，请勿直接 Push 到 Git 仓库。
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
