@@ -1,11 +1,12 @@
 name: 编译OpenCV-iOS13-极致精简版
 
 on:
-  workflow_dispatch:
+  workflow_dispatch: # 手动触发
 
 jobs:
   build-opencv:
-    runs-on: macos-latest
+    # 使用 macos-15 (确保是 M1/M2 芯片节点，编译更快且更符合当前环境)
+    runs-on: macos-15
 
     steps:
       - name: 拉取源码
@@ -21,26 +22,41 @@ jobs:
         with:
           python-version: '3.x'
 
-      - name: 开始编译 (Objective-C++ 模式)
+      - name: 开始编译 (仅arm64真机, 移除i386)
         run: |
           mkdir -p output
           
-          # 排除项说明：
-          # dnn: 最大的模块，移除
-          # java, js, python: 绑定层，移除
-          # objc_bindings_generator: OC封装层，移除 (我们改用 .mm 调用)
+          # 核心修复说明：
+          # 1. --iphoneos_archs arm64: 明确指定只编译真机架构
+          # 2. --iphonesimulator_archs "": 明确指定【不】编译模拟器架构，防止出现 i386 报错
+          # 3. 每一个模块单独使用 --without，防止 CMake 识别字符串成一坨
+          
           python3 opencv_source/platforms/ios/build_framework.py output \
             --iphoneos_archs arm64 \
+            --iphonesimulator_archs "" \
             --iphoneos_deployment_target 13.0 \
-            --without dnn,java,js,python_bindings_generator,objc_bindings_generator
+            --without dnn \
+            --without java \
+            --without js \
+            --without python_bindings_generator \
+            --without objc_bindings_generator \
+            --without videoio \
+            --without gapi
           
       - name: 剥离符号表 (Strip)
         run: |
           FRAMEWORK_PATH="output/opencv2.framework/opencv2"
-          # 这一步能大幅减小体积，使其稳稳地在 100MB 以下
-          strip -S $FRAMEWORK_PATH
-          echo "最终二进制大小:"
-          ls -lh $FRAMEWORK_PATH
+          # 检查文件是否存在
+          if [ -f "$FRAMEWORK_PATH" ]; then
+            echo "优化前文件大小:"
+            ls -lh $FRAMEWORK_PATH
+            strip -S $FRAMEWORK_PATH
+            echo "优化后文件大小:"
+            ls -lh $FRAMEWORK_PATH
+          else
+            echo "错误: 找不到编译后的二进制文件 $FRAMEWORK_PATH"
+            exit 1
+          fi
 
       - name: 压缩并上传到Release
         run: |
@@ -54,10 +70,10 @@ jobs:
           name: OpenCV iOS 13 (C++ 核心版)
           files: opencv2_ios13_cpp.zip
           body: |
-            ### 极致优化版说明
-            - **架构**: arm64 (iOS 13.0+)
-            - **模式**: 纯 C++ 核心 (请使用 .mm 文件调用)
-            - **已剔除**: DNN, 所有语言绑定层 (含 OC 封装)
-            - **优势**: 体积最小, 性能最高, 接口最全
+            ### 极致优化版说明 (修复 i386 报错)
+            - **架构**: 仅 arm64 (iOS 13.0+)
+            - **模式**: 纯 C++ 核心
+            - **已剔除**: DNN, 所有绑定层 (Java, JS, Python, ObjC)
+            - **注意**: 编译已移除模拟器支持，仅支持真机。
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
