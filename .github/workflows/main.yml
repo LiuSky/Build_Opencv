@@ -6,6 +6,10 @@ on:
 jobs:
   build-opencv:
     runs-on: macos-15
+    # --- 关键修复：显式声明权限 ---
+    permissions:
+      contents: write  # 允许 Actions 创建 Release 并上传文件
+    # ---------------------------
 
     steps:
       - name: 1. 环境检查与指定 Xcode 16.4
@@ -13,11 +17,11 @@ jobs:
           echo "==== 系统信息 ===="
           sw_vers
           uname -m
-          echo "==== 指定 Xcode 16.4 ===="
+          echo "==== 指定 Xcode 16.1 ===="
           sudo xcode-select -s /Applications/Xcode_16.4.app
           xcodebuild -version
 
-      - name: 2. 拉取 OpenCV 源码 (4.11.0)
+      - name: 2. 拉取 OpenCV 源码 (4.12.0)
         uses: actions/checkout@v4
         with:
           repository: opencv/opencv
@@ -28,14 +32,10 @@ jobs:
       - name: 3. 强力破解脚本并开始编译
         run: |
           mkdir -p output
-          
-          # 针对 Xcode 16 的硬核修复：
-          # 直接修改脚本，防止其尝试编译已失效的 i386 架构
+          # 修改脚本防止 i386 报错
           sed -i '' 's/\["i386", "x86_64"\]/\[\]/g' opencv_source/platforms/ios/build_framework.py
           sed -i '' 's/targets = self.get_default_targets()/targets = [("iphoneos", "arm64")]/g' opencv_source/platforms/ios/build_framework.py
           
-          # 运行编译
-          # --build_only_specified_archs: 强制只打指定的 arm64
           python3 opencv_source/platforms/ios/build_framework.py output \
             --opencv opencv_source \
             --iphoneos_archs arm64 \
@@ -47,19 +47,15 @@ jobs:
             --without js \
             --without python_bindings_generator
           
-      - name: 4. 检查文件大小 (不进行瘦身)
+      - name: 4. 检查文件大小
         run: |
-          # 修复路径查找逻辑：
-          # 在 iOS 静态库 Framework 结构中，真正的二进制文件位于 Versions/A/opencv2
-          # 根目录下的 opencv2 通常只是个符号链接
+          # 检查真正的二进制文件路径
           REAL_BINARY="output/opencv2.framework/Versions/A/opencv2"
-          
           if [ -f "$REAL_BINARY" ]; then
             echo "==== 最终二进制文件路径: $REAL_BINARY ===="
-            echo "==== 最终二进制文件大小 ===="
             ls -lh "$REAL_BINARY"
           else
-            echo "警告: 未能找到 Versions 结构下的二进制文件，尝试查找根目录..."
+            echo "警告: 尝试查找根目录..."
             REAL_BINARY="output/opencv2.framework/opencv2"
             if [ -f "$REAL_BINARY" ]; then
                ls -lh "$REAL_BINARY"
@@ -84,10 +80,9 @@ jobs:
           body: |
             ### 编译说明
             - **版本**: OpenCV 4.11.0
-            - **特点**: **未瘦身 (No Strip)**，包含完整符号表和调试信息。
+            - **特点**: **未瘦身 (No Strip)**，包含完整符号表。
             - **包含内容**: 保留了 Objective-C 包装层及所有核心算法模块。
             - **最低支持**: iOS 13.0
             - **架构**: arm64 (仅真机)
-            - **体积提示**: 预计 >300MB，请勿直接 Push 到 Git 仓库。
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
