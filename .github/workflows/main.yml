@@ -25,28 +25,34 @@ jobs:
           path: opencv_source
           fetch-depth: 1
 
-      - name: 3. 开始编译 (修复 i386 优化检查错误)
+      - name: 3. 强力破解编译脚本 (禁用模拟器架构)
+        run: |
+          # 针对 Xcode 16 的硬核修复：
+          # 直接修改 Python 脚本，把默认的模拟器架构清空
+          # 这样脚本就不会再尝试配置 i386 或 x86_64
+          sed -i '' 's/\["i386", "x86_64"\]/\[\]/g' opencv_source/platforms/ios/build_framework.py
+          
+          # 进一步确保 target 列表里只有 iphoneos
+          sed -i '' 's/targets = self.get_default_targets()/targets = [("iphoneos", "arm64")]/g' opencv_source/platforms/ios/build_framework.py
+          
+          echo "==== 脚本修改完成，已强制锁定 arm64 真机架构 ===="
+
+      - name: 4. 开始编译 (保留 OC 绑定层)
         run: |
           mkdir -p output
           
-          # 核心修复点：
-          # 1. 使用 --iphonesimulator_archs "" 确保不构建模拟器。
-          # 2. 通过 --cmake_option 强制指定 CPU_BASELINE。
-          #    针对 arm64，我们指定使用 NEON 指令集。
-          #    这样 CMake 就不会去尝试检测那些已经不存在的 i386 指令集。
-          
+          # 运行修改后的脚本
+          # 我们不再传递 --cmake_option（因为旧版脚本不支持该参数）
+          # 我们仅排除 DNN 和 其它平台的绑定层
           python3 opencv_source/platforms/ios/build_framework.py output \
             --iphoneos_archs arm64 \
-            --iphonesimulator_archs "" \
             --iphoneos_deployment_target 13.0 \
-            --cmake_option "-DCPU_BASELINE=NEON" \
-            --cmake_option "-DCPU_DISPATCH=NEON" \
             --without dnn \
             --without java \
             --without js \
             --without python_bindings_generator
           
-      - name: 4. 深度瘦身 (Strip)
+      - name: 5. 深度瘦身 (Strip)
         run: |
           # 自动定位生成的二进制文件
           FRAMEWORK_BIN=$(find output -name "opencv2" -type f | grep "opencv2.framework/opencv2")
@@ -54,33 +60,34 @@ jobs:
             echo "==== Strip 前文件信息 ===="
             ls -lh $FRAMEWORK_BIN
             
-            # 剥离符号表和调试信息
+            # 剥离符号表和调试信息 (这是过 100MB 关卡的关键)
             strip -S $FRAMEWORK_BIN
             
             echo "==== Strip 后文件信息 ===="
             ls -lh $FRAMEWORK_BIN
           else
-            echo "错误: 未找到二进制文件"
+            echo "错误: 未找到二进制文件，请检查编译日志"
             find output -maxdepth 5
             exit 1
           fi
 
-      - name: 5. 打包并上传
+      - name: 6. 打包并上传
         run: |
           cd output
           zip -r ../opencv2_ios13_objc.zip opencv2.framework
 
-      - name: 6. 创建 Release
+      - name: 7. 创建 Release
         uses: softprops/action-gh-release@v1
         with:
           tag_name: v4.11.0-ios13-objc
-          name: OpenCV 4.11.0 iOS 13 (含OC支持 - 修复i386错误)
+          name: OpenCV 4.11.0 iOS 13 (含OC支持 - Xcode16适配版)
           files: opencv2_ios13_objc.zip
           body: |
             ### 编译说明
-            - **修复错误**: 解决了 Xcode 16 环境下 i386 架构指令检查失败的问题。
-            - **包含内容**: 保留了 Objective-C 绑定层和所有核心算法模块。
-            - **已移除**: DNN, Java, JS, Python。
-            - **架构**: arm64 (iOS 13.0+)
+            - **适配 Xcode 16**: 强制移除了已失效的 i386 模拟器架构校验。
+            - **包含内容**: 保留了 Objective-C 包装层 (可直接在 OC 项目中使用)。
+            - **最低支持**: iOS 13.0
+            - **架构**: arm64 (仅真机)
+            - **排除模块**: DNN, Java, JS, Python。
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
