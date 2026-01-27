@@ -1,4 +1,4 @@
-name: 编译OpenCV-iOS13-含OC支持
+name: 编译OpenCV-iOS13-完整版(含OC)
 
 on:
   workflow_dispatch:
@@ -8,12 +8,12 @@ jobs:
     runs-on: macos-15
 
     steps:
-      - name: 1. 打印环境信息
+      - name: 1. 环境检查与指定 Xcode 16.4
         run: |
           echo "==== 系统信息 ===="
           sw_vers
           uname -m
-          echo "==== 指定 Xcode 16.4 ===="
+          echo "==== 指定 Xcode 16.1 ===="
           sudo xcode-select -s /Applications/Xcode_16.4.app
           xcodebuild -version
 
@@ -25,69 +25,58 @@ jobs:
           path: opencv_source
           fetch-depth: 1
 
-      - name: 3. 强力破解编译脚本 (禁用模拟器架构)
-        run: |
-          # 针对 Xcode 16 的硬核修复：
-          # 直接修改 Python 脚本，把默认的模拟器架构清空
-          # 这样脚本就不会再尝试配置 i386 或 x86_64
-          sed -i '' 's/\["i386", "x86_64"\]/\[\]/g' opencv_source/platforms/ios/build_framework.py
-          
-          # 进一步确保 target 列表里只有 iphoneos
-          sed -i '' 's/targets = self.get_default_targets()/targets = [("iphoneos", "arm64")]/g' opencv_source/platforms/ios/build_framework.py
-          
-          echo "==== 脚本修改完成，已强制锁定 arm64 真机架构 ===="
-
-      - name: 4. 开始编译 (保留 OC 绑定层)
+      - name: 3. 开始编译 (保留 OC 绑定, 不进行瘦身)
         run: |
           mkdir -p output
           
-          # 运行修改后的脚本
-          # 我们不再传递 --cmake_option（因为旧版脚本不支持该参数）
-          # 我们仅排除 DNN 和 其它平台的绑定层
+          # 编译指令说明：
+          # --iphoneos_archs arm64: 仅编译 64 位真机
+          # --iphonesimulator_archs "": 跳过模拟器，解决 Xcode 16 的 i386 兼容报错
+          # --build_only_specified_archs: 强制脚本只编译 arm64，不编译已过时的 armv7
+          # --without: 仅移除 DNN 和 其它平台绑定，确保 OC 绑定层被编译
+          
           python3 opencv_source/platforms/ios/build_framework.py output \
+            --opencv opencv_source \
             --iphoneos_archs arm64 \
+            --iphonesimulator_archs "" \
+            --build_only_specified_archs \
             --iphoneos_deployment_target 13.0 \
             --without dnn \
             --without java \
             --without js \
             --without python_bindings_generator
           
-      - name: 5. 深度瘦身 (Strip)
+      - name: 4. 检查文件大小 (不进行 Strip)
         run: |
-          # 自动定位生成的二进制文件
-          FRAMEWORK_BIN=$(find output -name "opencv2" -type f | grep "opencv2.framework/opencv2")
-          if [ -f "$FRAMEWORK_BIN" ]; then
-            echo "==== Strip 前文件信息 ===="
-            ls -lh $FRAMEWORK_BIN
-            
-            # 剥离符号表和调试信息 (这是过 100MB 关卡的关键)
-            strip -S $FRAMEWORK_BIN
-            
-            echo "==== Strip 后文件信息 ===="
-            ls -lh $FRAMEWORK_BIN
+          BINARY_PATH=$(find output -name "opencv2" -type f | grep "opencv2.framework/opencv2")
+          if [ -f "$BINARY_PATH" ]; then
+            echo "==== 最终二进制文件大小 ===="
+            ls -lh "$BINARY_PATH"
           else
-            echo "错误: 未找到二进制文件，请检查编译日志"
-            find output -maxdepth 5
+            echo "错误: 未能找到生成的二进制文件"
+            find output -name "opencv2"
             exit 1
           fi
 
-      - name: 6. 打包并上传
+      - name: 5. 压缩 Framework
         run: |
           cd output
-          zip -r ../opencv2_ios13_objc.zip opencv2.framework
+          # 压缩时保留所有内容
+          zip -r ../opencv2_ios13_full_objc.zip opencv2.framework
 
-      - name: 7. 创建 Release
+      - name: 6. 上传到 GitHub Release
         uses: softprops/action-gh-release@v1
         with:
-          tag_name: v4.11.0-ios13-objc
-          name: OpenCV 4.11.0 iOS 13 (含OC支持 - Xcode16适配版)
-          files: opencv2_ios13_objc.zip
+          tag_name: v4.11.0-ios13-full
+          name: OpenCV 4.11.0 iOS 13 (完整OC版 - 未瘦身)
+          files: opencv2_ios13_full_objc.zip
           body: |
             ### 编译说明
-            - **适配 Xcode 16**: 强制移除了已失效的 i386 模拟器架构校验。
-            - **包含内容**: 保留了 Objective-C 包装层 (可直接在 OC 项目中使用)。
-            - **最低支持**: iOS 13.0
-            - **架构**: arm64 (仅真机)
-            - **排除模块**: DNN, Java, JS, Python。
+            - **版本**: OpenCV 4.11.0
+            - **特点**: **未瘦身 (No Strip)**，包含完整符号表。
+            - **包含内容**: 保留了 Objective-C 包装层、Features2d、Stitching、Video、Calib3d 等所有核心模块。
+            - **已移除**: 仅去除了 DNN 模块。
+            - **架构**: arm64 (iOS 13.0+)
+            - **警告**: 由于未瘦身，文件体积很大（预计 >300MB），请不要将其提交至 Git 仓库。
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
