@@ -1,59 +1,63 @@
-name: Build Custom Slim OpenCV
+name: 编译OpenCV-iOS13-极致精简版
 
 on:
-  workflow_dispatch: # 允许你手动点击按钮触发运行
+  workflow_dispatch:
 
 jobs:
-  build-ios-opencv:
-    runs-on: macos-latest # 必须在 macOS 上编译 iOS 库
+  build-opencv:
+    runs-on: macos-latest
 
     steps:
-      - name: Checkout OpenCV Source
+      - name: 拉取源码
         uses: actions/checkout@v4
         with:
           repository: opencv/opencv
-          ref: 4.x # 使用最新的 4.x 分支
+          ref: 4.x
           path: opencv_source
           fetch-depth: 1
 
-      - name: Set up Python
+      - name: 配置Python
         uses: actions/setup-python@v4
         with:
           python-version: '3.x'
 
-      - name: Build OpenCV Framework
+      - name: 开始编译 (Objective-C++ 模式)
         run: |
-          # 运行编译脚本
-          # --iphoneos_archs arm64: 仅保留真机架构
-          # --without: 移除重型模块以确保体积 < 100MB
+          mkdir -p output
+          
+          # 排除项说明：
+          # dnn: 最大的模块，移除
+          # java, js, python: 绑定层，移除
+          # objc_bindings_generator: OC封装层，移除 (我们改用 .mm 调用)
           python3 opencv_source/platforms/ios/build_framework.py output \
             --iphoneos_archs arm64 \
-            --without dnn,stitching,ml,video,calib3d,gapi,java,js,python_bindings_generator,objc_bindings_generator,videoio
+            --iphoneos_deployment_target 13.0 \
+            --without dnn,java,js,python_bindings_generator,objc_bindings_generator
           
-      - name: Optimize Binary (Strip Symbols)
+      - name: 剥离符号表 (Strip)
         run: |
-          # 剥离符号表进一步缩小体积
-          echo "Before strip:"
-          ls -lh output/opencv2.framework/opencv2
-          strip -S output/opencv2.framework/opencv2
-          echo "After strip:"
-          ls -lh output/opencv2.framework/opencv2
+          FRAMEWORK_PATH="output/opencv2.framework/opencv2"
+          # 这一步能大幅减小体积，使其稳稳地在 100MB 以下
+          strip -S $FRAMEWORK_PATH
+          echo "最终二进制大小:"
+          ls -lh $FRAMEWORK_PATH
 
-      - name: Compress Framework
+      - name: 压缩并上传到Release
         run: |
           cd output
-          zip -r ../opencv2.framework.zip opencv2.framework
+          zip -r ../opencv2_ios13_cpp.zip opencv2.framework
 
-      - name: Create Release and Upload
+      - name: 创建Release
         uses: softprops/action-gh-release@v1
         with:
-          tag_name: v1.0.0-opencv-slim
-          name: Custom Slim OpenCV for Script Engine
-          files: opencv2.framework.zip
+          tag_name: v4.x-ios13-cpp
+          name: OpenCV iOS 13 (C++ 核心版)
+          files: opencv2_ios13_cpp.zip
           body: |
-            这是为脚本引擎定制的精简版 OpenCV。
-            - 架构: arm64
-            - 已移除: DNN, Stitching, ML, Video, Calib3d, GAPI
-            - 适配: 直接放入项目，支持 GitHub 100MB 限制
+            ### 极致优化版说明
+            - **架构**: arm64 (iOS 13.0+)
+            - **模式**: 纯 C++ 核心 (请使用 .mm 文件调用)
+            - **已剔除**: DNN, 所有语言绑定层 (含 OC 封装)
+            - **优势**: 体积最小, 性能最高, 接口最全
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
