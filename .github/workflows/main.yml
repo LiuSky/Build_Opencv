@@ -1,4 +1,4 @@
-name: 编译OpenCV-iOS13-完整版(含OC)
+name: 编译OpenCV-iOS13-精简100MB版
 
 on:
   workflow_dispatch:
@@ -6,18 +6,12 @@ on:
 jobs:
   build-opencv:
     runs-on: macos-15
-    # --- 关键修复：显式声明权限 ---
     permissions:
-      contents: write  # 允许 Actions 创建 Release 并上传文件
-    # ---------------------------
+      contents: write
 
     steps:
       - name: 1. 环境检查与指定 Xcode 16.4
         run: |
-          echo "==== 系统信息 ===="
-          sw_vers
-          uname -m
-          echo "==== 指定 Xcode 16.1 ===="
           sudo xcode-select -s /Applications/Xcode_16.4.app
           xcodebuild -version
 
@@ -36,6 +30,9 @@ jobs:
           sed -i '' 's/\["i386", "x86_64"\]/\[\]/g' opencv_source/platforms/ios/build_framework.py
           sed -i '' 's/targets = self.get_default_targets()/targets = [("iphoneos", "arm64")]/g' opencv_source/platforms/ios/build_framework.py
           
+          # 策略：去掉不需要的大型模块以缩减体积
+          # 保留：core, imgproc, imgcodecs, features2d, objdetect, objc
+          # 移除：dnn, stitching(拼接), ml(机器学习), video(视频分析), calib3d(3D校准), gapi, photo
           python3 opencv_source/platforms/ios/build_framework.py output \
             --opencv opencv_source \
             --iphoneos_archs arm64 \
@@ -43,46 +40,51 @@ jobs:
             --build_only_specified_archs \
             --iphoneos_deployment_target 13.0 \
             --without dnn \
+            --without stitching \
+            --without ml \
+            --without video \
+            --without calib3d \
+            --without gapi \
+            --without photo \
             --without java \
             --without js \
             --without python_bindings_generator
           
-      - name: 4. 检查文件大小
+      - name: 4. 关键步骤：执行瘦身 (Strip)
         run: |
-          # 检查真正的二进制文件路径
+          # 只有执行了 strip，文件才能从 300MB 降到 100MB 以下
           REAL_BINARY="output/opencv2.framework/Versions/A/opencv2"
           if [ -f "$REAL_BINARY" ]; then
-            echo "==== 最终二进制文件路径: $REAL_BINARY ===="
+            echo "==== Strip 前大小 ===="
+            ls -lh "$REAL_BINARY"
+            
+            # -S 移除调试符号，保留业务逻辑，支持 OC 调用
+            strip -S "$REAL_BINARY"
+            
+            echo "==== Strip 后大小 ===="
             ls -lh "$REAL_BINARY"
           else
-            echo "警告: 尝试查找根目录..."
-            REAL_BINARY="output/opencv2.framework/opencv2"
-            if [ -f "$REAL_BINARY" ]; then
-               ls -lh "$REAL_BINARY"
-            else
-               echo "错误: 彻底找不到生成的二进制文件"
-               find output -maxdepth 5 -name "opencv2"
-               exit 1
-            fi
+            echo "错误: 找不到二进制文件"
+            exit 1
           fi
 
       - name: 5. 压缩 Framework
         run: |
           cd output
-          zip -r ../opencv2_ios13_full_objc.zip opencv2.framework
+          zip -r ../opencv2_ios13_100mb_objc.zip opencv2.framework
 
       - name: 6. 上传到 GitHub Release
         uses: softprops/action-gh-release@v1
         with:
-          tag_name: v4.11.0-ios13-full
-          name: OpenCV 4.11.0 iOS 13 (完整OC版 - 未瘦身)
-          files: opencv2_ios13_full_objc.zip
+          tag_name: v4.12.0-ios13-100mb
+          name: OpenCV 4.12.0 iOS 13 (OC版-约100MB)
+          files: opencv2_ios13_100mb_objc.zip
           body: |
-            ### 编译说明
-            - **版本**: OpenCV 4.11.0
-            - **特点**: **未瘦身 (No Strip)**，包含完整符号表。
-            - **包含内容**: 保留了 Objective-C 包装层及所有核心算法模块。
-            - **最低支持**: iOS 13.0
-            - **架构**: arm64 (仅真机)
+            ### 优化说明
+            - **目标**: 体积控制在 100MB 左右，支持直接 Push 到 Git 仓库。
+            - **包含**: Objective-C 包装层、Core、Imgproc、Features2d、Objdetect。
+            - **移除**: DNN, Stitching, ML, Video, Calib3d, Photo 等。
+            - **瘦身**: 已执行 `strip -S`，剔除调试符号。
+            - **架构**: arm64 (iOS 13.0+)
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
