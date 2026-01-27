@@ -1,0 +1,59 @@
+name: Build Custom Slim OpenCV
+
+on:
+  workflow_dispatch: # 允许你手动点击按钮触发运行
+
+jobs:
+  build-ios-opencv:
+    runs-on: macos-latest # 必须在 macOS 上编译 iOS 库
+
+    steps:
+      - name: Checkout OpenCV Source
+        uses: actions/checkout@v4
+        with:
+          repository: opencv/opencv
+          ref: 4.x # 使用最新的 4.x 分支
+          path: opencv_source
+          fetch-depth: 1
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.x'
+
+      - name: Build OpenCV Framework
+        run: |
+          # 运行编译脚本
+          # --iphoneos_archs arm64: 仅保留真机架构
+          # --without: 移除重型模块以确保体积 < 100MB
+          python3 opencv_source/platforms/ios/build_framework.py output \
+            --iphoneos_archs arm64 \
+            --without dnn,stitching,ml,video,calib3d,gapi,java,js,python_bindings_generator,objc_bindings_generator,videoio
+          
+      - name: Optimize Binary (Strip Symbols)
+        run: |
+          # 剥离符号表进一步缩小体积
+          echo "Before strip:"
+          ls -lh output/opencv2.framework/opencv2
+          strip -S output/opencv2.framework/opencv2
+          echo "After strip:"
+          ls -lh output/opencv2.framework/opencv2
+
+      - name: Compress Framework
+        run: |
+          cd output
+          zip -r ../opencv2.framework.zip opencv2.framework
+
+      - name: Create Release and Upload
+        uses: softprops/action-gh-release@v1
+        with:
+          tag_name: v1.0.0-opencv-slim
+          name: Custom Slim OpenCV for Script Engine
+          files: opencv2.framework.zip
+          body: |
+            这是为脚本引擎定制的精简版 OpenCV。
+            - 架构: arm64
+            - 已移除: DNN, Stitching, ML, Video, Calib3d, GAPI
+            - 适配: 直接放入项目，支持 GitHub 100MB 限制
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
