@@ -45,11 +45,19 @@ jobs:
 
           SANITIZE_FLAGS="-g0 -ffile-prefix-map=${GITHUB_WORKSPACE}=YKBuild/OpenCV -fdebug-prefix-map=${GITHUB_WORKSPACE}=YKBuild/OpenCV -fmacro-prefix-map=${GITHUB_WORKSPACE}=YKBuild/OpenCV"
           SANITIZE_FLAGS="${SANITIZE_FLAGS} -ffile-prefix-map=${GITHUB_WORKSPACE}/opencv_source=YKBuild/OpenCV/opencv -fdebug-prefix-map=${GITHUB_WORKSPACE}/opencv_source=YKBuild/OpenCV/opencv -fmacro-prefix-map=${GITHUB_WORKSPACE}/opencv_source=YKBuild/OpenCV/opencv"
+          export CFLAGS="${SANITIZE_FLAGS}"
+          export CXXFLAGS="${SANITIZE_FLAGS}"
+          export OBJCFLAGS="${SANITIZE_FLAGS}"
+          export OBJCXXFLAGS="${SANITIZE_FLAGS}"
 
           export YK_OPENCV_EXTRA_CMAKE_ARGS="$(cat <<EOF
           -DCV_TRACE=OFF
           -DOPENCV_TRACE=OFF
+          -DENABLE_LTO=OFF
+          -DENABLE_THIN_LTO=OFF
           -DBUILD_WITH_DEBUG_INFO=OFF
+          -DCMAKE_INTERPROCEDURAL_OPTIMIZATION=OFF
+          -DCMAKE_XCODE_ATTRIBUTE_ENABLE_BITCODE=NO
           -DCMAKE_C_FLAGS=${SANITIZE_FLAGS}
           -DCMAKE_CXX_FLAGS=${SANITIZE_FLAGS}
           -DCMAKE_OBJC_FLAGS=${SANITIZE_FLAGS}
@@ -70,6 +78,7 @@ jobs:
             --iphonesimulator_archs "" \
             --build_only_specified_archs \
             --disable-swift \
+            --disable-bitcode \
             --iphoneos_deployment_target 13.0 \
             --without dnn \
             --without stitching \
@@ -98,11 +107,29 @@ jobs:
           ls -lh "$REAL_BINARY"
 
           echo "==== 扫描 framework 本地路径 ===="
-          LOCAL_PATH_PATTERN='/Users/|/private/var/folders/|/var/folders/|/tmp/yk-|/Desktop/|DerivedData|Build_Opencv'
-          if rg -L -a -n "$LOCAL_PATH_PATTERN" output/opencv2.framework; then
-            echo "错误: OpenCV framework 仍包含本地路径，停止发布。"
+          ruby <<'RUBY'
+          pattern = %r{/Users/|/private/var/folders/|/var/folders/|/tmp/yk-|/Desktop/|DerivedData|Build_Opencv}
+          bad = []
+
+          Dir.glob("output/opencv2.framework/**/*", File::FNM_DOTMATCH).each do |path|
+            next unless File.file?(path)
+
+            data = File.binread(path)
+            match = data.match(pattern)
+            next unless match
+
+            start_at = [match.begin(0) - 80, 0].max
+            end_at = [match.end(0) + 160, data.bytesize].min
+            snippet = data.byteslice(start_at...end_at).gsub(/[^\x20-\x7e]/, ".")
+            bad << "#{path}: #{snippet}"
+          end
+
+          if bad.any?
+            puts "错误: OpenCV framework 仍包含本地路径，停止发布。"
+            puts bad.first(50)
             exit 1
-          fi
+          end
+          RUBY
 
       - name: 6. 压缩 Framework
         run: |
