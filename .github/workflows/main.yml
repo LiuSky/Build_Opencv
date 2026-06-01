@@ -14,6 +14,7 @@ jobs:
         run: |
           sudo xcode-select -s /Applications/Xcode_16.4.app
           xcodebuild -version
+          python3 --version
 
       - name: 2. 拉取 OpenCV 源码 (4.12.0)
         uses: actions/checkout@v4
@@ -23,16 +24,46 @@ jobs:
           path: opencv_source
           fetch-depth: 1
 
-      - name: 3. 强力破解脚本并开始编译
+      - name: 3. 修正 OpenCV iOS 构建脚本
         run: |
-          mkdir -p output
-          # 修改脚本防止 i386 报错
+          set -euo pipefail
+
+          # OpenCV 的 ObjC 生成脚本使用 /usr/bin/env python，GitHub Runner 上统一改成 python3。
+          find opencv_source -name '*.py' -type f -exec perl -0pi -e 's@^#!/usr/bin/env python$@#!/usr/bin/env python3@m; s@^#!/usr/bin/python$@#!/usr/bin/env python3@m' {} +
+
+          # 修改脚本防止 i386 报错，并只编译 iphoneos arm64。
           sed -i '' 's/\["i386", "x86_64"\]/\[\]/g' opencv_source/platforms/ios/build_framework.py
           sed -i '' 's/targets = self.get_default_targets()/targets = [("iphoneos", "arm64")]/g' opencv_source/platforms/ios/build_framework.py
-          
+
+          # 官方 build_framework.py 没有外部 CMake 参数入口，这里只给本次构建加一个环境变量入口。
+          perl -0pi -e 's/cmakecmd\.append\(dir\)\n        cmakecmd\.extend\(cmakeargs\)/extra_args = os.environ.get("YK_OPENCV_EXTRA_CMAKE_ARGS", "")\n        if extra_args:\n            cmakecmd.extend(extra_args.split("\\n"))\n        cmakecmd.append(dir)\n        cmakecmd.extend(cmakeargs)/' opencv_source/platforms/ios/build_framework.py
+
+      - name: 4. 编译干净 OpenCV framework
+        run: |
+          set -euo pipefail
+          mkdir -p output
+
+          SANITIZE_FLAGS="-g0 -ffile-prefix-map=${GITHUB_WORKSPACE}=YKBuild/OpenCV -fdebug-prefix-map=${GITHUB_WORKSPACE}=YKBuild/OpenCV -fmacro-prefix-map=${GITHUB_WORKSPACE}=YKBuild/OpenCV"
+          SANITIZE_FLAGS="${SANITIZE_FLAGS} -ffile-prefix-map=${GITHUB_WORKSPACE}/opencv_source=YKBuild/OpenCV/opencv -fdebug-prefix-map=${GITHUB_WORKSPACE}/opencv_source=YKBuild/OpenCV/opencv -fmacro-prefix-map=${GITHUB_WORKSPACE}/opencv_source=YKBuild/OpenCV/opencv"
+
+          export YK_OPENCV_EXTRA_CMAKE_ARGS="$(cat <<EOF
+          -DCV_TRACE=OFF
+          -DOPENCV_TRACE=OFF
+          -DBUILD_WITH_DEBUG_INFO=OFF
+          -DCMAKE_C_FLAGS=${SANITIZE_FLAGS}
+          -DCMAKE_CXX_FLAGS=${SANITIZE_FLAGS}
+          -DCMAKE_OBJC_FLAGS=${SANITIZE_FLAGS}
+          -DCMAKE_OBJCXX_FLAGS=${SANITIZE_FLAGS}
+          -DCMAKE_C_FLAGS_RELEASE=-DNDEBUG -O3 ${SANITIZE_FLAGS}
+          -DCMAKE_CXX_FLAGS_RELEASE=-DNDEBUG -O3 ${SANITIZE_FLAGS}
+          -DCMAKE_OBJC_FLAGS_RELEASE=-DNDEBUG -O3 ${SANITIZE_FLAGS}
+          -DCMAKE_OBJCXX_FLAGS_RELEASE=-DNDEBUG -O3 ${SANITIZE_FLAGS}
+          EOF
+          )"
+
           # 策略：去掉不需要的大型模块以缩减体积
-          # 保留：core, imgproc, imgcodecs, features2d, objdetect, objc
-          # 移除：dnn, stitching(拼接), ml(机器学习), video(视频分析), calib3d(3D校准), gapi, photo
+          # 保留：core, imgproc, imgcodecs, features2d, objc
+          # 移除：dnn, stitching, ml, video, calib3d, gapi, photo
           python3 opencv_source/platforms/ios/build_framework.py output \
             --opencv opencv_source \
             --iphoneos_archs arm64 \
@@ -49,31 +80,36 @@ jobs:
             --without java \
             --without js \
             --without python_bindings_generator
-          
-      - name: 4. 关键步骤：执行瘦身 (Strip)
+
+      - name: 5. 执行瘦身并扫描本地路径
         run: |
-          # 只有执行了 strip，文件才能从 300MB 降到 100MB 以下
+          set -euo pipefail
           REAL_BINARY="output/opencv2.framework/Versions/A/opencv2"
-          if [ -f "$REAL_BINARY" ]; then
-            echo "==== Strip 前大小 ===="
-            ls -lh "$REAL_BINARY"
-            
-            # -S 移除调试符号，保留业务逻辑，支持 OC 调用
-            strip -S "$REAL_BINARY"
-            
-            echo "==== Strip 后大小 ===="
-            ls -lh "$REAL_BINARY"
-          else
+          if [ ! -f "$REAL_BINARY" ]; then
             echo "错误: 找不到二进制文件"
             exit 1
           fi
 
-      - name: 5. 压缩 Framework
+          echo "==== Strip 前大小 ===="
+          ls -lh "$REAL_BINARY"
+          strip -S "$REAL_BINARY"
+          echo "==== Strip 后大小 ===="
+          ls -lh "$REAL_BINARY"
+
+          echo "==== 扫描 framework 本地路径 ===="
+          LOCAL_PATH_PATTERN='/Users/|/private/var/folders/|/var/folders/|/tmp/yk-|/Desktop/|DerivedData|opencv_source|Build_Opencv'
+          if rg -a -n "$LOCAL_PATH_PATTERN" output/opencv2.framework; then
+            echo "错误: OpenCV framework 仍包含本地路径，停止发布。"
+            exit 1
+          fi
+
+      - name: 6. 压缩 Framework
         run: |
+          set -euo pipefail
           cd output
           zip -r ../opencv2_ios13_100mb_objc.zip opencv2.framework
 
-      - name: 6. 上传到 GitHub Release
+      - name: 7. 上传到 GitHub Release
         uses: softprops/action-gh-release@v1
         with:
           tag_name: v4.12.0-ios13-100mb
@@ -82,9 +118,10 @@ jobs:
           body: |
             ### 优化说明
             - **目标**: 体积控制在 100MB 左右，支持直接 Push 到 Git 仓库。
-            - **包含**: Objective-C 包装层、Core、Imgproc、Features2d、Objdetect。
+            - **包含**: Objective-C 包装层、Core、Imgproc、Features2d。
             - **移除**: DNN, Stitching, ML, Video, Calib3d, Photo 等。
             - **瘦身**: 已执行 `strip -S`，剔除调试符号。
+            - **隐私**: 已关闭 OpenCV trace，添加 prefix-map，并在发布前扫描本地路径。
             - **架构**: arm64 (iOS 13.0+)
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
