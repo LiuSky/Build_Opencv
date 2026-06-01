@@ -61,6 +61,8 @@ jobs:
           File.write(path, text)
           RUBY
 
+          perl -0pi -e 's|#define OPENCV_INSTALL_PREFIX \\\\"\\$\\{CMAKE_INSTALL_PREFIX\\}\\\\"|#define OPENCV_INSTALL_PREFIX \\\\"YKBuild/OpenCV/install\\\\"|g; s|#define OPENCV_BUILD_DIR \\\\"\\$\\{CMAKE_BINARY_DIR\\}\\\\"|#define OPENCV_BUILD_DIR \\\\"YKBuild/OpenCV/build\\\\"|g' opencv_source/modules/core/CMakeLists.txt
+
       - name: 4. 编译干净 OpenCV framework
         run: |
           set -euo pipefail
