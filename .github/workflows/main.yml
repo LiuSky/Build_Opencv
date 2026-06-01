@@ -38,6 +38,10 @@ jobs:
           # 官方 build_framework.py 没有外部 CMake 参数入口，这里只给本次构建加一个环境变量入口。
           perl -0pi -e 's/cmakecmd\.append\(dir\)\n        cmakecmd\.extend\(cmakeargs\)/extra_args = os.environ.get("YK_OPENCV_EXTRA_CMAKE_ARGS", "")\n        if extra_args:\n            cmakecmd.extend(extra_args.split("\\n"))\n        cmakecmd.append(dir)\n        cmakecmd.extend(cmakeargs)/' opencv_source/platforms/ios/build_framework.py
 
+          # OpenCV 会把 CMake 编译参数写进 getBuildInformation()，其中会包含 prefix-map 的原始绝对路径。
+          # 这里保留真实编译参数，只隐藏写入二进制的 build-info 文本。
+          perl -0pi -e 's/status\("    C\+\+ flags \(Release\):"\s+\$\{CMAKE_CXX_FLAGS\} \$\{CMAKE_CXX_FLAGS_RELEASE\}\)/status("    C++ flags (Release):" "<hidden>")/g; s/status\("    C\+\+ flags \(Debug\):"\s+\$\{CMAKE_CXX_FLAGS\} \$\{CMAKE_CXX_FLAGS_DEBUG\}\)/status("    C++ flags (Debug):" "<hidden>")/g; s/status\("    C flags \(Release\):"\s+\$\{CMAKE_C_FLAGS\} \$\{CMAKE_C_FLAGS_RELEASE\}\)/status("    C flags (Release):" "<hidden>")/g; s/status\("    C flags \(Debug\):"\s+\$\{CMAKE_C_FLAGS\} \$\{CMAKE_C_FLAGS_DEBUG\}\)/status("    C flags (Debug):" "<hidden>")/g' opencv_source/CMakeLists.txt
+
       - name: 4. 编译干净 OpenCV framework
         run: |
           set -euo pipefail
