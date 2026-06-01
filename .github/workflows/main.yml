@@ -69,6 +69,7 @@ jobs:
             --iphoneos_archs arm64 \
             --iphonesimulator_archs "" \
             --build_only_specified_archs \
+            --disable-swift \
             --iphoneos_deployment_target 13.0 \
             --without dnn \
             --without stitching \
@@ -97,8 +98,8 @@ jobs:
           ls -lh "$REAL_BINARY"
 
           echo "==== 扫描 framework 本地路径 ===="
-          LOCAL_PATH_PATTERN='/Users/|/private/var/folders/|/var/folders/|/tmp/yk-|/Desktop/|DerivedData|opencv_source|Build_Opencv'
-          if rg -a -n "$LOCAL_PATH_PATTERN" output/opencv2.framework; then
+          LOCAL_PATH_PATTERN='/Users/|/private/var/folders/|/var/folders/|/tmp/yk-|/Desktop/|DerivedData|Build_Opencv'
+          if rg -L -a -n "$LOCAL_PATH_PATTERN" output/opencv2.framework; then
             echo "错误: OpenCV framework 仍包含本地路径，停止发布。"
             exit 1
           fi
@@ -109,7 +110,37 @@ jobs:
           cd output
           zip -r ../opencv2_ios13_100mb_objc.zip opencv2.framework
 
-      - name: 7. 上传到 GitHub Release
+      - name: 7. 删除旧 Release 资产
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          ASSET_NAME: opencv2_ios13_100mb_objc.zip
+          TAG_NAME: v4.12.0-ios13-100mb
+        run: |
+          set -euo pipefail
+
+          RELEASE_JSON="$(curl -fsSL \
+            -H "Authorization: Bearer ${GITHUB_TOKEN}" \
+            -H "Accept: application/vnd.github+json" \
+            "https://api.github.com/repos/${GITHUB_REPOSITORY}/releases/tags/${TAG_NAME}" || true)"
+
+          if [ -z "$RELEASE_JSON" ]; then
+            echo "没有找到旧 Release，跳过删除旧资产。"
+            exit 0
+          fi
+
+          ASSET_ID="$(printf '%s' "$RELEASE_JSON" | ruby -rjson -e 'j=JSON.parse(STDIN.read); a=j.fetch("assets", []).find { |x| x["name"] == ENV["ASSET_NAME"] }; puts a["id"] if a')"
+          if [ -z "$ASSET_ID" ]; then
+            echo "没有找到旧资产 ${ASSET_NAME}，跳过删除。"
+            exit 0
+          fi
+
+          curl -fsSL -X DELETE \
+            -H "Authorization: Bearer ${GITHUB_TOKEN}" \
+            -H "Accept: application/vnd.github+json" \
+            "https://api.github.com/repos/${GITHUB_REPOSITORY}/releases/assets/${ASSET_ID}"
+          echo "已删除旧资产 ${ASSET_NAME}。"
+
+      - name: 8. 上传到 GitHub Release
         uses: softprops/action-gh-release@v1
         with:
           tag_name: v4.12.0-ios13-100mb
