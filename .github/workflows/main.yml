@@ -42,6 +42,25 @@ jobs:
           # 这里保留真实编译参数，只隐藏写入二进制的 build-info 文本。
           perl -0pi -e 's/status\("    C\+\+ flags \(Release\):"\s+\$\{CMAKE_CXX_FLAGS\} \$\{CMAKE_CXX_FLAGS_RELEASE\}\)/status("    C++ flags (Release):" "<hidden>")/g; s/status\("    C\+\+ flags \(Debug\):"\s+\$\{CMAKE_CXX_FLAGS\} \$\{CMAKE_CXX_FLAGS_DEBUG\}\)/status("    C++ flags (Debug):" "<hidden>")/g; s/status\("    C flags \(Release\):"\s+\$\{CMAKE_C_FLAGS\} \$\{CMAKE_C_FLAGS_RELEASE\}\)/status("    C flags (Release):" "<hidden>")/g; s/status\("    C flags \(Debug\):"\s+\$\{CMAKE_C_FLAGS\} \$\{CMAKE_C_FLAGS_DEBUG\}\)/status("    C flags (Debug):" "<hidden>")/g' opencv_source/CMakeLists.txt
 
+          ruby <<'RUBY'
+          path = "opencv_source/cmake/OpenCVUtils.cmake"
+          text = File.read(path)
+          needle = <<'CMAKE'
+          function(ocv_output_status msg)
+            message(STATUS "${msg}")
+          CMAKE
+          replacement = <<'CMAKE'
+          function(ocv_output_status msg)
+            message(STATUS "${msg}")
+            if(DEFINED ENV{GITHUB_WORKSPACE})
+              string(REPLACE "$ENV{GITHUB_WORKSPACE}" "YKBuild/OpenCV" msg "${msg}")
+            endif()
+            string(REGEX REPLACE "/Users/[^\n\t ;\"]+" "YKBuild/Path" msg "${msg}")
+          CMAKE
+          raise "failed to patch OpenCVUtils.cmake" unless text.sub!(needle, replacement)
+          File.write(path, text)
+          RUBY
+
       - name: 4. 编译干净 OpenCV framework
         run: |
           set -euo pipefail
